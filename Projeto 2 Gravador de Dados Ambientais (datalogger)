@@ -1,0 +1,322 @@
+// Projeto 2 Gravador de Dados Ambientais (datalogger)
+//O projeto tem como estrutura inicial 3 partes: a uart, a comunicação i2c, e o teclado matricial.
+//Para a comunicação com a uart, o arduino recebe uma string do teclado do computador atraves da comunicação serial
+//Para a comunicação I2C, foi usado um ci de memoria externo(AT24C16), em que um determinado dado pode ser salvo ou lido em uma determinada posição de memoria, para isso foi usado a biblioteca AH_24Cxx.h.
+//Também foi implementado um teclado matricial de 4x4, que faz a leitura aplicando um sinal em uma linha de cada vez e lendo todas as suas colunas. 
+//Para o projeto foi impementado as seguintes funções:
+//Para a Uart ao digitar:
+//Ping - Retorna "PONG";
+//ID - Retorna o nome do grupo;
+//Measure - Retorna o valor de uma medição, mas não grava na memória;
+//Memstatus - Retorna o número de elementos na memória;
+//Reset - Apaga toda a memoria usada;
+//Record - Realiza uma medição e grava o valor na memória;
+//Get_N - Reotorna o N-ésimo elemento na memória.
+//Para a Comunicação com o teclado matricial ao digitar:
+//#1* - Começa a piscar um LED, indicando que o sistema está responsivo, para de piscar caso a segquencia de botões seja apertada novamente ;
+//#2* - Realiza uma medição e grava o calor na memória;
+//#3* - Ativa modo de medição automática;
+//#4* - Encerra modo de medição automática.
+
+//Referencias
+//http://stackoverflow.com/questions/8004237/how-do-i-properly-compare-strings-in-c
+//https://www.arduino.cc/en/Tutorial/SerialEvent
+//https://forum.arduino.cc/index.php?topic=407036.0
+
+#include <TimerOne.h>
+#include <Wire.h>
+#include <AH_24Cxx.h> 
+
+#define EEPROM_BUS_ADDRESS 0x00 
+#define AT24C16 4
+
+AH_24Cxx i2c_eeprom = AH_24Cxx(AT24C16, EEPROM_BUS_ADDRESS);
+
+char GET[10];
+String InputString = "";      
+String Teclado= "" ;
+boolean stringComplete = false;  
+String Ping = "PING\n";
+String ID = "ID\n";
+String Measure = "MEASURE\n";
+String Memstatus = "MEMSTATUS\n";
+String Reset = "RESET\n";
+String Record = "RECORD\n";
+String Get_N = "GET N\n";
+String Um = "#1*";
+String Dois = "#2*";
+String Tres = "#3*"; 
+String Quatro = "#4*";
+char KeyMap[4][4] =
+{
+  { '1', '2', '3', 'A' },
+  { '4', '5', '6', 'B' },
+  { '7', '8', '9', 'C' },
+  { '*', '0', '#', 'D' }
+};
+char Digito;
+int Tamanho = 0;
+int i;
+int Sensor = 0;
+int Mediana=0;
+int Memoria=0;
+char Numero[4];
+int Automatico=0;
+int FlagInt=0;
+int LED=0;
+int FlagLed=0;
+
+
+void setup() {
+  // Inicialização do serial:
+  Serial.begin(9600);
+  InputString.reserve(200);
+  Teclado.reserve(200);
+  //Pinos ligados aos pinos 1, 2, 3 e 4 do Teclado - Linhas
+  pinMode(3, OUTPUT);
+  pinMode(4, OUTPUT);
+  pinMode(5, OUTPUT);
+  pinMode(6, OUTPUT);
+   
+  //Pinos ligados aos pinos 5, 6, 7 e 8 do Teclado - Colunas
+  pinMode(8, INPUT);
+  pinMode(9, INPUT);
+  pinMode(10, INPUT);
+  pinMode(11, INPUT);
+
+  //Inicialização do sensor termico
+  pinMode(Sensor , OUTPUT);
+
+  //inicialização do LED no pino 2
+  pinMode(2 , OUTPUT);
+
+  Wire.begin();
+
+  //Inicialização da interrupção
+  Timer1.initialize(1000000); // Interrupcao a cada 1s
+  Timer1.attachInterrupt(Interrupcao); // Associa a interrupcao periodica a funcao Maquina_Estados
+}
+
+//Função que medi varios valores retornados pelo sensor e faz a sua mediana 
+void Medir(){
+  int vNumeros[9];
+  int j=0;
+  int E=0;
+  int temp=0;
+ 
+ // Obtenemos los 10 números y los guardamos en vNumeros
+ for(E = 0; E <9; E++){
+  vNumeros[E] = analogRead(Sensor);
+  delay(10);
+  }
+  // Ordenamos los números del vector vNumeros por el método de burbuja 
+  for (E = 0; E < 9; E++){
+    for (j = E + 1; j < 9; j++){
+      if (vNumeros[j] < vNumeros[E]){ 
+        temp = vNumeros[j]; 
+        vNumeros[j] = vNumeros[E]; 
+        vNumeros[E] = temp; 
+      } 
+    } 
+  }
+  Mediana = vNumeros[4]-200; //impede que o valor do sensor ultrapasse os 255 da capacidade do ci de memoria
+}
+
+
+// Função acionada pela interrupção para salvar na memoria a cada 1s ou para piscar o led
+void Interrupcao() { 
+  if(Automatico==1){
+    FlagInt=1;
+  }
+  if(LED==1){
+    if(FlagLed==0){
+      FlagLed=1;
+      digitalWrite(2, HIGH);
+    }
+    else if(FlagLed==1){
+      FlagLed=0;
+      digitalWrite(2, LOW);
+    }    
+  }
+  else if(LED==0){
+    digitalWrite(2, LOW);
+  }
+}
+
+void loop() {
+  //Loop usado para ler os sinais do teclado matricial
+  for (int ti = 3; ti<7; ti++)
+    {
+    //Alterna o estado dos pinos das linhas
+    digitalWrite(3, LOW);
+    digitalWrite(4, LOW);
+    digitalWrite(5, LOW);
+    digitalWrite(6, LOW);
+    digitalWrite(ti, HIGH);
+    //Verifica se alguma tecla da coluna 1 foi pressionada
+    if (digitalRead(8) == HIGH)
+    {
+      while(digitalRead(8) == HIGH){}
+      Digito = KeyMap[ti-3][0];
+      Teclado += Digito;
+      Tamanho++;
+      delay(10);
+    }
+ 
+    //Verifica se alguma tecla da coluna 2 foi pressionada    
+    if (digitalRead(9) == HIGH)
+    {
+      while(digitalRead(9) == HIGH){};
+      Digito = KeyMap[ti-3][1];
+      Teclado += Digito;
+      Tamanho++;
+      delay(10);
+    }
+     
+    //Verifica se alguma tecla da coluna 3 foi pressionada
+    if (digitalRead(10) == HIGH)
+    {
+      while(digitalRead(10) == HIGH){}
+      Digito = KeyMap[ti-3][2];
+      Teclado += Digito;
+      Tamanho++;
+      delay(10);
+    }
+
+    //Verifica se alguma tecla da coluna 4 foi pressionada
+    if (digitalRead(11) == HIGH)
+    {
+      while(digitalRead(11) == HIGH){} 
+      Digito = KeyMap[ti-3][3];
+      Teclado += Digito;
+      Tamanho++;
+      delay(10);   
+    }
+  }
+  //Caso receba uma string da entrada da uart com o teclado do computador...
+  if (stringComplete) {
+    //realiza uma das funções propostas, caso a string seja compativel.
+    if(InputString.equals(Ping)){
+      Serial.print("PONG");
+      Serial.print("\n");
+     }
+     if(InputString.equals(ID)){
+      Serial.print("Grupo: Henrique e Ricardo");
+      Serial.print("\n");
+     }
+     if(InputString.equals(Measure)){
+      Medir();
+      Serial.print(Mediana);
+      Serial.print("\n");
+      delay(10);
+     }
+     if(InputString.equals(Memstatus)){
+      Serial.print(Memoria);
+      Serial.print("\n");
+     }
+     if(InputString.equals(Reset) && Automatico==0){
+      for(i=0;i<Memoria;i++){
+        i2c_eeprom.write_byte(i, 0);
+        delay(10);
+        }
+        Memoria=0;
+      }
+     if(InputString.equals(Record) && Automatico==0){
+      Medir();
+      Serial.print(Mediana);
+      Serial.print("\n");
+      i2c_eeprom.write_byte(Memoria, Mediana);
+      delay(10);
+      Memoria++;      
+      if(Memoria==32767){
+        Serial.print("Memoria estorou, ela sera retornada para a posicao inicial\n");
+        Memoria=0;
+        }
+     }
+    //As linhas a seguir convertem o valor do GET em um valor numerico
+    InputString.toCharArray(GET, 10); 
+    if(GET[0]=='G' && GET[1]=='E' && GET[2]=='T' && GET[3]==' '){
+      if(GET[4]>=48 && GET[4]<=57){
+        Numero[0]= GET[4];
+      }
+      if(GET[5]>=48 && GET[5]<=57){
+        Numero[1]= GET[5];
+      }
+      if(GET[6]>=48 && GET[6]<=57){
+        Numero[2]= GET[6];
+      }
+      if(GET[7]>=48 && GET[7]<=57){
+        Numero[3]= GET[7];
+      }
+      if(GET[8]>=48 && GET[8]<=57){
+        Numero[4]= GET[8];
+      }      
+      Serial.println(i2c_eeprom.read_byte(atoi(Numero)));
+      Serial.print("\n");
+    }
+    //Limpa a string recebida da uart e prepara para receber a proxima string
+    InputString = "";
+    stringComplete = false;
+  }
+
+ //Analisa a string produzida pelo teclado matricial e executa as funções propostas, caso a string seja compatível
+  if(Teclado.equals(Um)){
+    if(LED==0){
+      LED=1;
+    }
+    else if(LED==1){
+      LED=0;
+    }
+  }
+  if(Teclado.equals(Dois) && Automatico==0){
+    Medir();
+    Serial.print(Mediana);
+    Serial.print("\n");
+    i2c_eeprom.write_byte(Memoria, Mediana);
+    delay(10);
+    Memoria++;   
+    if(Memoria==32767){
+      Serial.print("Memoria estorou, ela sera retornada para a posicao inicial\n");
+      Memoria=0;
+    }
+  }
+  if(Teclado.equals(Tres)){
+    Automatico=1;
+  }
+  if(Teclado.equals(Quatro)){
+    Automatico=0;
+  }  
+
+//Caso a flag da interrupção esteja ativada, será salvo um valor na memoria
+  if(FlagInt==1){
+    FlagInt=0;
+    Medir();
+    i2c_eeprom.write_byte(Memoria, Mediana);
+    Memoria++;
+    if(Memoria==32767){
+      Serial.print("Memoria estorou, ela sera retornada para a posicao inicial\n");
+      Memoria=0;
+    }
+    Serial.println(Mediana);
+  }
+
+  
+  //Caso a string do teclado receba o terceiro elemento, ele é renicializado depois da sua analise 
+  if(Tamanho>2){
+     Tamanho=0;
+     Serial.print(Teclado);
+     Serial.print("\n");
+     Teclado = "";
+  }
+}
+
+//Função que recebe uma string da uart
+void serialEvent() {
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    InputString += inChar;
+    if (inChar == '\n') {
+      stringComplete = true;
+    }
+  }
+}
